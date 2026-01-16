@@ -1,6 +1,5 @@
 // A multi-progressbar solution.
-// Supports I/O operations only at this point in
-// development
+// Supports I/O operations only at this point in development
 package mbar
 
 import (
@@ -8,6 +7,7 @@ import (
 	"math"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/dustin/go-humanize"
 	"golang.org/x/term"
@@ -31,19 +31,40 @@ type Bar struct {
 	id int
 	// Current amount written so far
 	currentSize int
+	// Total writes
+	writes int
+	// Start time for I/O operations
+	startTime time.Time
 	// The output for the bar
 	content string
 	// The channel to send write updates to
 	update chan bool
 }
 
-// Calcualtes the progress for the bar
-// Returns the percentage and how many blocks to fill depending
-// on the width of the bar
-func calculateProgress(current, max, width int) (pc, blks int) {
+// Calcualtes the progress for display on the bar.
+// Returns the percentage completed.
+func calculateProgress(current, max int) (pc int) {
 	pc = int(math.Floor((float64(current) / float64(max)) * float64(100)))
-	blks = int(math.Floor(float64(width) * (float64(pc) / float64(100))))
 	return
+}
+
+// Calcualtes the progress for the bar.
+// Returns the total bar blocks and how many to fill.
+func calculateBarProgress(maxWidth, percent, suffix, title, extra int) (barSize, barProg int) {
+	strWidth := suffix + title + extra
+	barSize = maxWidth - strWidth
+	barProg = int(math.Floor(float64(barSize) * (float64(percent) / float64(100))))
+	return
+}
+
+// Calcualtes the progress for display on the bar.
+// Returns a string containing the I/O speed and 
+// how long is left to complete the operation.
+func calculateStats(written, total int, startTime time.Time) string {
+	diff := time.Since(startTime)
+	speed := float64(written) / diff.Seconds()
+	eta := float64(total - written) / speed
+	return fmt.Sprintf("%s/s | %s", humanize.Bytes(uint64(speed)), (time.Duration(eta)*time.Second).Round(time.Second).String())
 }
 
 // Returns a new nulti-bar instance
@@ -53,21 +74,27 @@ func NewMBar() *MBar {
 
 // Returns a new bar to attach to a multi-bar instance
 func (MBar) newBar(title string, size int, update chan bool) *Bar {
-	return &Bar{Title: title, Size: size, id: 0, currentSize: 0, update: update}
+	return &Bar{Title: title, Size: size, id: 0, currentSize: 0, writes: 0, update: update}
 }
 
 // Generates the bar for output to the terminal
 func (b *Bar) genBar(n int) error {
+	if b.writes == 1 {
+		b.startTime = time.Now()
+	}
 	b.currentSize = b.currentSize + n
 	w, _, err := term.GetSize(int(os.Stdout.Fd()))
-	barSize := w / 2
-	percent, barProg := calculateProgress(b.currentSize, b.Size, barSize)
-	b.content = fmt.Sprintf("\033[K%s [%s%s] [%s/%s | %d%%]", b.Title, strings.Repeat("#", barProg), strings.Repeat("-", barSize-barProg), humanize.Bytes(uint64(b.currentSize)), humanize.Bytes(uint64(b.Size)), percent)
+	percent := calculateProgress(b.currentSize, b.Size)
+	stats := calculateStats(b.currentSize, b.Size, b.startTime)
+	suffix := fmt.Sprintf(" [%s] [%s/%s | %d%%]", stats, humanize.Bytes(uint64(b.currentSize)), humanize.Bytes(uint64(b.Size)), percent)
+	barSize, barProg := calculateBarProgress(w, percent, len(suffix), len(b.Title), 3)
+	b.content = fmt.Sprintf("\033[K%s [%s%s]%s", b.Title, strings.Repeat("#", barProg), strings.Repeat("-", barSize-barProg), suffix)
 	return err
 }
 
 // io.writer implementation
 func (b *Bar) Write(p []byte) (n int, err error) {
+	b.writes++
 	n = len(p)
 	err = b.genBar(n)
 	b.update <- true
@@ -82,14 +109,14 @@ func (b *Bar) Write(p []byte) (n int, err error) {
 func (m *MBar) Start() {
 	go func() {
 		for range m.update {
-			var buf string
+			var buf strings.Builder
 			if m.NumBars > 0 {
 				for _, b := range m.bars {
-					buf += b.content
-					buf += "\n"
+					buf .WriteString(b.content)
+					buf .WriteString("\n")
 				}
-				buf += fmt.Sprintf("\033[%dA\r", m.NumBars)
-				fmt.Fprint(os.Stdout, buf)
+				buf.WriteString(fmt.Sprintf("\033[%dA\r", m.NumBars))
+				fmt.Fprint(os.Stdout, buf.String())
 			}
 		}
 	}()
@@ -107,11 +134,11 @@ func (m *MBar) Add(title string, size int) *Bar {
 // It must be called to reset the cursor's
 // position for output purposes.
 func (m *MBar) Finish(msg string) {
-	var buf string
+	var buf strings.Builder
 	for _, b := range m.bars {
-		buf += b.content
-		buf += "\n"
+		buf .WriteString(b.content)
+		buf .WriteString("\n")
 	}
-	buf += msg + "\n"
-	fmt.Fprint(os.Stdout, buf)
+	buf.WriteString(msg + "\n")
+	fmt.Fprint(os.Stdout, buf.String())
 }
