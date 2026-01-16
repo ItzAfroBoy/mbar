@@ -9,7 +9,7 @@ import (
 )
 
 func Example() {
-	mb := mbar.NewMBar()
+	mb := mbar.NewMBar(mbar.Config{ShowTime: true, ShowSpeed: true, ShowSize: true})
 	res, err := http.Get("https://ash-speed.hetzner.com/100MB.bin")
 	if err != nil {
 		panic(err)
